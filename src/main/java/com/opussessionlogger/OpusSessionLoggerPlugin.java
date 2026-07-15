@@ -7,19 +7,26 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ScheduledExecutorService;
 import javax.inject.Inject;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.Client;
+import net.runelite.api.EnumComposition;
 import net.runelite.api.Player;
+import net.runelite.api.Quest;
 import net.runelite.api.Skill;
+import net.runelite.api.StructComposition;
 import net.runelite.api.events.ActorDeath;
 import net.runelite.api.events.GameStateChanged;
 import net.runelite.api.events.GameTick;
 import net.runelite.api.events.StatChanged;
+import net.runelite.api.gameval.VarPlayerID;
+import net.runelite.api.gameval.VarbitID;
 import net.runelite.client.RuneLite;
 import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.plugins.Plugin;
@@ -40,6 +47,69 @@ public class OpusSessionLoggerPlugin extends Plugin
 	// A checkpoint bounds what a hard crash can lose: the importer closes an
 	// unpaired session at its last checkpoint instead of its login snapshot.
 	private static final int CHECKPOINT_TICKS = 500;
+
+	// Achievement diary completion varbits (gameval VarbitID). RAW values are
+	// exported — the host-side importer decodes them, so any semantics surprise
+	// (Karamja's legacy ATJUN_* trio predates the 0/1 pattern) is a Python fix,
+	// not a plugin rebuild.
+	private static final Map<String, Map<String, Integer>> DIARY_VARBITS = new LinkedHashMap<>();
+
+	static
+	{
+		DIARY_VARBITS.put("Ardougne", tiers(VarbitID.ARDOUGNE_DIARY_EASY_COMPLETE, VarbitID.ARDOUGNE_DIARY_MEDIUM_COMPLETE, VarbitID.ARDOUGNE_DIARY_HARD_COMPLETE, VarbitID.ARDOUGNE_DIARY_ELITE_COMPLETE));
+		DIARY_VARBITS.put("Desert", tiers(VarbitID.DESERT_DIARY_EASY_COMPLETE, VarbitID.DESERT_DIARY_MEDIUM_COMPLETE, VarbitID.DESERT_DIARY_HARD_COMPLETE, VarbitID.DESERT_DIARY_ELITE_COMPLETE));
+		DIARY_VARBITS.put("Falador", tiers(VarbitID.FALADOR_DIARY_EASY_COMPLETE, VarbitID.FALADOR_DIARY_MEDIUM_COMPLETE, VarbitID.FALADOR_DIARY_HARD_COMPLETE, VarbitID.FALADOR_DIARY_ELITE_COMPLETE));
+		DIARY_VARBITS.put("Fremennik", tiers(VarbitID.FREMENNIK_DIARY_EASY_COMPLETE, VarbitID.FREMENNIK_DIARY_MEDIUM_COMPLETE, VarbitID.FREMENNIK_DIARY_HARD_COMPLETE, VarbitID.FREMENNIK_DIARY_ELITE_COMPLETE));
+		DIARY_VARBITS.put("Kandarin", tiers(VarbitID.KANDARIN_DIARY_EASY_COMPLETE, VarbitID.KANDARIN_DIARY_MEDIUM_COMPLETE, VarbitID.KANDARIN_DIARY_HARD_COMPLETE, VarbitID.KANDARIN_DIARY_ELITE_COMPLETE));
+		DIARY_VARBITS.put("Karamja", tiers(VarbitID.ATJUN_EASY_DONE, VarbitID.ATJUN_MED_DONE, VarbitID.ATJUN_HARD_DONE, VarbitID.KARAMJA_DIARY_ELITE_COMPLETE));
+		DIARY_VARBITS.put("Kourend & Kebos", tiers(VarbitID.KOUREND_DIARY_EASY_COMPLETE, VarbitID.KOUREND_DIARY_MEDIUM_COMPLETE, VarbitID.KOUREND_DIARY_HARD_COMPLETE, VarbitID.KOUREND_DIARY_ELITE_COMPLETE));
+		DIARY_VARBITS.put("Lumbridge & Draynor", tiers(VarbitID.LUMBRIDGE_DIARY_EASY_COMPLETE, VarbitID.LUMBRIDGE_DIARY_MEDIUM_COMPLETE, VarbitID.LUMBRIDGE_DIARY_HARD_COMPLETE, VarbitID.LUMBRIDGE_DIARY_ELITE_COMPLETE));
+		DIARY_VARBITS.put("Morytania", tiers(VarbitID.MORYTANIA_DIARY_EASY_COMPLETE, VarbitID.MORYTANIA_DIARY_MEDIUM_COMPLETE, VarbitID.MORYTANIA_DIARY_HARD_COMPLETE, VarbitID.MORYTANIA_DIARY_ELITE_COMPLETE));
+		DIARY_VARBITS.put("Varrock", tiers(VarbitID.VARROCK_DIARY_EASY_COMPLETE, VarbitID.VARROCK_DIARY_MEDIUM_COMPLETE, VarbitID.VARROCK_DIARY_HARD_COMPLETE, VarbitID.VARROCK_DIARY_ELITE_COMPLETE));
+		DIARY_VARBITS.put("Western Provinces", tiers(VarbitID.WESTERN_DIARY_EASY_COMPLETE, VarbitID.WESTERN_DIARY_MEDIUM_COMPLETE, VarbitID.WESTERN_DIARY_HARD_COMPLETE, VarbitID.WESTERN_DIARY_ELITE_COMPLETE));
+		DIARY_VARBITS.put("Wilderness", tiers(VarbitID.WILDERNESS_DIARY_EASY_COMPLETE, VarbitID.WILDERNESS_DIARY_MEDIUM_COMPLETE, VarbitID.WILDERNESS_DIARY_HARD_COMPLETE, VarbitID.WILDERNESS_DIARY_ELITE_COMPLETE));
+	}
+
+	private static Map<String, Integer> tiers(int easy, int medium, int hard, int elite)
+	{
+		final Map<String, Integer> m = new LinkedHashMap<>();
+		m.put("Easy", easy);
+		m.put("Medium", medium);
+		m.put("Hard", hard);
+		m.put("Elite", elite);
+		return m;
+	}
+
+	// Combat Achievements: tier enums -> task structs (the ca-export mechanism).
+	// Struct param 1308 = task name, 1306 = task id; completion is bit (id % 32)
+	// of varp CA_TASK_COMPLETED_{id / 32}.
+	private static final Map<Integer, String> CA_TIER_ENUMS = new LinkedHashMap<>();
+
+	static
+	{
+		CA_TIER_ENUMS.put(3981, "Easy");
+		CA_TIER_ENUMS.put(3982, "Medium");
+		CA_TIER_ENUMS.put(3983, "Hard");
+		CA_TIER_ENUMS.put(3984, "Elite");
+		CA_TIER_ENUMS.put(3985, "Master");
+		CA_TIER_ENUMS.put(3986, "Grandmaster");
+	}
+
+	private static final int CA_STRUCT_NAME_PARAM = 1308;
+	private static final int CA_STRUCT_ID_PARAM = 1306;
+
+	private static final int[] CA_VARPS = new int[]{
+		VarPlayerID.CA_TASK_COMPLETED_0, VarPlayerID.CA_TASK_COMPLETED_1,
+		VarPlayerID.CA_TASK_COMPLETED_2, VarPlayerID.CA_TASK_COMPLETED_3,
+		VarPlayerID.CA_TASK_COMPLETED_4, VarPlayerID.CA_TASK_COMPLETED_5,
+		VarPlayerID.CA_TASK_COMPLETED_6, VarPlayerID.CA_TASK_COMPLETED_7,
+		VarPlayerID.CA_TASK_COMPLETED_8, VarPlayerID.CA_TASK_COMPLETED_9,
+		VarPlayerID.CA_TASK_COMPLETED_10, VarPlayerID.CA_TASK_COMPLETED_11,
+		VarPlayerID.CA_TASK_COMPLETED_12, VarPlayerID.CA_TASK_COMPLETED_13,
+		VarPlayerID.CA_TASK_COMPLETED_14, VarPlayerID.CA_TASK_COMPLETED_15,
+		VarPlayerID.CA_TASK_COMPLETED_16, VarPlayerID.CA_TASK_COMPLETED_17,
+		VarPlayerID.CA_TASK_COMPLETED_18, VarPlayerID.CA_TASK_COMPLETED_19,
+	};
 
 	@Inject
 	private Client client;
@@ -135,6 +205,10 @@ public class OpusSessionLoggerPlugin extends Plugin
 			inSession = true;
 			ticksSinceCheckpoint = 0;
 			writeEvent("login", null);
+			// Completionist state (quests/diaries/CAs) reads varps and cache
+			// enums, which are loaded by now — but wiped at the login screen,
+			// so login-tick (not logout) is the reliable capture point.
+			writeCompletionistEvent();
 			return;
 		}
 
@@ -202,6 +276,54 @@ public class OpusSessionLoggerPlugin extends Plugin
 	{
 		// Shutdown-only path: a queued write would race JVM exit and lose.
 		appendLine(buildEventLine(type, reason));
+	}
+
+	private void writeCompletionistEvent()
+	{
+		final Map<String, Object> event = new LinkedHashMap<>();
+		event.put("event", "completionist");
+		event.put("session_uuid", sessionUuid);
+		event.put("ts_ms", Instant.now().toEpochMilli());
+		event.put("player", playerName);
+
+		final Map<String, String> quests = new LinkedHashMap<>();
+		for (Quest quest : Quest.values())
+		{
+			quests.put(quest.getName(), quest.getState(client).name());
+		}
+		event.put("quests", quests);
+
+		final Map<String, Map<String, Integer>> diaries = new LinkedHashMap<>();
+		DIARY_VARBITS.forEach((region, regionTiers) ->
+		{
+			final Map<String, Integer> values = new LinkedHashMap<>();
+			regionTiers.forEach((tier, varbit) -> values.put(tier, client.getVarbitValue(varbit)));
+			diaries.put(region, values);
+		});
+		event.put("diaries", diaries);
+
+		final List<Map<String, Object>> combatAchievements = new ArrayList<>();
+		for (Map.Entry<Integer, String> tierEntry : CA_TIER_ENUMS.entrySet())
+		{
+			final EnumComposition tierEnum = client.getEnum(tierEntry.getKey());
+			for (int structId : tierEnum.getIntVals())
+			{
+				final StructComposition struct = client.getStructComposition(structId);
+				final int id = struct.getIntValue(CA_STRUCT_ID_PARAM);
+				final boolean completed =
+					(client.getVarpValue(CA_VARPS[id / 32]) & (1 << (id % 32))) != 0;
+				final Map<String, Object> task = new LinkedHashMap<>();
+				task.put("id", id);
+				task.put("name", struct.getStringValue(CA_STRUCT_NAME_PARAM));
+				task.put("tier", tierEntry.getValue());
+				task.put("completed", completed);
+				combatAchievements.add(task);
+			}
+		}
+		event.put("combat_achievements", combatAchievements);
+
+		final String line = gson.toJson(event);
+		executor.submit(() -> appendLine(line));
 	}
 
 	private void appendLine(String line)
