@@ -29,6 +29,7 @@ import net.runelite.api.gameval.VarPlayerID;
 import net.runelite.api.gameval.VarbitID;
 import net.runelite.client.RuneLite;
 import net.runelite.client.eventbus.Subscribe;
+import net.runelite.client.events.ClientShutdown;
 import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
 
@@ -219,6 +220,22 @@ public class OpusSessionLoggerPlugin extends Plugin
 		{
 			ticksSinceCheckpoint = 0;
 			writeEvent("checkpoint", null);
+		}
+	}
+
+	@Subscribe
+	public void onClientShutdown(ClientShutdown event)
+	{
+		// The client-close path. RuneLite does NOT call plugin shutDown() on
+		// exit (verified 2026-07-15: window closed from in-game, no lifecycle
+		// call, logout line lost) — it fires this event instead. waitFor()
+		// makes the client block on our final write before the JVM exits.
+		if (inSession)
+		{
+			final String line = buildEventLine("logout", "client_shutdown");
+			inSession = false;
+			sessionUuid = null;
+			event.waitFor(executor.submit(() -> appendLine(line)));
 		}
 	}
 
