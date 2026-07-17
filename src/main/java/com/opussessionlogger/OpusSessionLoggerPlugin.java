@@ -45,14 +45,14 @@ public class OpusSessionLoggerPlugin extends Plugin
 	private static final String EXPORT_FILE_NAME = "sessions.jsonl";
 
 	// Game ticks between checkpoint events (~0.6s per tick → ~5 minutes).
-	// A checkpoint bounds what a hard crash can lose: the importer closes an
+	// A checkpoint bounds what a hard crash can lose: a reader can close an
 	// unpaired session at its last checkpoint instead of its login snapshot.
 	private static final int CHECKPOINT_TICKS = 500;
 
 	// Achievement diary completion varbits (gameval VarbitID). RAW values are
-	// exported — the host-side importer decodes them, so any semantics surprise
-	// (Karamja's legacy ATJUN_* trio predates the 0/1 pattern) is a Python fix,
-	// not a plugin rebuild.
+	// exported deliberately and decoded downstream, so a semantics surprise
+	// (Karamja's legacy ATJUN_* trio predates the 0/1 pattern) is fixed by the
+	// reader, not by a plugin rebuild.
 	private static final Map<String, Map<String, Integer>> DIARY_VARBITS = new LinkedHashMap<>();
 
 	static
@@ -214,8 +214,8 @@ public class OpusSessionLoggerPlugin extends Plugin
 		}
 
 		// Periodic checkpoint while in-session — bounds crash data loss to
-		// ~5 minutes. The importer uses the last checkpoint as the honest
-		// end-bound for a session whose logout event never arrived.
+		// ~5 minutes. The last checkpoint is the honest end-bound for a
+		// session whose logout event never arrived.
 		if (inSession && ++ticksSinceCheckpoint >= CHECKPOINT_TICKS)
 		{
 			ticksSinceCheckpoint = 0;
@@ -242,8 +242,8 @@ public class OpusSessionLoggerPlugin extends Plugin
 	@Subscribe
 	public void onActorDeath(ActorDeath event)
 	{
-		// HCIM-critical: log the local player's death with a full skill
-		// snapshot. Other actors' deaths (NPCs, other players) are ignored.
+		// A death is irreversible, so it is worth a full skill snapshot at the
+		// moment it happens. Other actors' deaths (NPCs, other players) are ignored.
 		if (inSession && event.getActor() == client.getLocalPlayer())
 		{
 			writeEvent("death", null);
